@@ -5,13 +5,16 @@ import select
 import struct
 from networking.packet import *
 
+HEADER_SIZE = 4
+
 
 class Server:
 
-    def __init__(self, _host, _port, _header_size=4):
+    registered_packets = {}
+
+    def __init__(self, _host, _port):
         self.host = _host
         self.port = _port
-        self.header_size = _header_size
         self.sockets = []
         self.clients = {}
 
@@ -30,14 +33,20 @@ class Server:
     def send_packet(self, client_socket, message: JsonPacket):
         encoded_message = message.write()
         message_length = struct.pack('!I', len(encoded_message))
-        client_socket.sendall(message_length + encoded_message)
+        packet_id = struct.pack("!I", message.packet_id)
+        client_socket.sendall(message_length + packet_id + encoded_message)
 
     def read_packet(self, client_socket: socket.socket) -> Optional[JsonPacket]:
         try:
-            raw_message_length = client_socket.recv(self.header_size)
+            raw_message_length = client_socket.recv(HEADER_SIZE)
             if not raw_message_length:
                 return None
             message_length = struct.unpack('!I', raw_message_length)[0]
+
+            raw_packet_id = client_socket.recv(HEADER_SIZE)
+            if not raw_packet_id:
+                return None
+            packet_id = struct.unpack("!I", raw_packet_id)[0]
 
             data = b''
             while len(data) < message_length:
@@ -46,7 +55,11 @@ class Server:
                     return None
                 data += data_part
 
-            json_packet = packet.load_packet(data)
+            json_packet = load_packet(packet_id, data)
+            if packet_id in self.registered_packets.keys():
+                back_packet = self.registered_packets[packet_id](json_packet)
+                if back_packet is not None:
+                    self.send_packet(client_socket, back_packet)
 
             return json_packet
         except:
@@ -78,7 +91,19 @@ class Server:
         except KeyboardInterrupt:
             print("Interruption manuelle")
 
+    def register_packet(self, packet_id: int, response: callable(JsonPacket)):
+        self.registered_packets[packet_id] = response
+        print(self.registered_packets.keys())
+
+
+def hello_world_packet_handler(message: JsonPacket):
+    sender = message.dictionary['sender']
+    print(f"Hello world received from {sender}")
+    hello_back = JsonPacket(2, {"content": f"Hello {sender}"})
+    return hello_back
+
 
 if __name__ == '__main__':
     server = Server("127.0.0.1", 12345)
+    server.register_packet(1, hello_world_packet_handler)
     server.enable_sockets()

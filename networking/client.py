@@ -7,13 +7,15 @@ from networking.packet import *
 import struct
 import threading
 
+HEADER_SIZE = 4
+
 
 class Client:
+    registered_packets = {}
 
-    def __init__(self, _host, _port, _header_size=4):
+    def __init__(self, _host, _port):
         self.host = _host
         self.port = _port
-        self.header_size = _header_size
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.enabled = False
 
@@ -22,14 +24,20 @@ class Client:
             return None
         encoded_message = message.write()
         message_length = struct.pack('!I', len(encoded_message))
-        self.client_socket.sendall(message_length + encoded_message)
+        packet_id = struct.pack("!I", message.packet_id)
+        self.client_socket.sendall(message_length + packet_id + encoded_message)
 
     def read_packet(self, client_socket: socket.socket) -> Optional[JsonPacket]:
         try:
-            raw_message_length = client_socket.recv(self.header_size)
+            raw_message_length = client_socket.recv(HEADER_SIZE)
             if not raw_message_length:
                 return None
             message_length = struct.unpack('!I', raw_message_length)[0]
+
+            raw_packet_id = client_socket.recv(HEADER_SIZE)
+            if not raw_packet_id:
+                return None
+            packet_id = struct.unpack("!I", raw_packet_id)[0]
 
             data = b''
             while len(data) < message_length:
@@ -38,7 +46,11 @@ class Client:
                     return None
                 data += data_part
 
-            json_packet = packet.load_packet(data)
+            json_packet = load_packet(packet_id, data)
+            if packet_id in self.registered_packets:
+                back_packet = self.registered_packets[packet_id](json_packet)
+                if back_packet is not None:
+                    self.send_packet(back_packet)
 
             return json_packet
         except:
@@ -49,7 +61,7 @@ class Client:
         print(f"Client connecté au serveur {self.host}:{self.port}")
         self.enabled = True
 
-        test_packet = JsonPacket({"message": "Ceci est un test"})
+        test_packet = JsonPacket(2, {"message": "Ceci est un test"})
         self.send_packet(test_packet)
 
         while True:
@@ -64,12 +76,15 @@ class Client:
                         self.client_socket.close()
                         return None
                     else:
-                        print(f"Message reçu: {message}")
+                        print(f"Message reçu: {message.dictionary}")
 
     def enable_client(self):
         input_thread = threading.Thread(target=self.launch_thread)
         input_thread.daemon = False  # Le thread ne se termine pas quand le thread principal termine
         input_thread.start()
+
+    def register_packet(self, packet_id: int, response: callable(JsonPacket)):
+        self.registered_packets[packet_id] = response
 
 
 if __name__ == '__main__':
@@ -78,4 +93,4 @@ if __name__ == '__main__':
     print("ok ?")
     while not client.enabled:
         time.sleep(0.1)
-    client.send_packet(JsonPacket({"allo": "alluile !"}))
+    client.send_packet(JsonPacket(1, {"sender": "client", "content": "Hello World"}))
